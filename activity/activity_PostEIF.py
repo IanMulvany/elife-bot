@@ -12,6 +12,9 @@ activity_PostEIF.py activity
 """
 import requests
 
+success_codes = [200]
+retry_codes = [429, 500]
+error_codes = [300]
 
 class activity_PostEIF(activity.activity):
     def __init__(self, settings, logger, conn=None, token=None, activity_task=None):
@@ -62,7 +65,7 @@ class activity_PostEIF(activity.activity):
                                     "Finish submission of article " + article_id +
                                     " for version " + str(version) + " run " + str(run) + " the response status "
                                                                                           "was " + str(r.status_code))
-            if r.status_code == 200:
+            if r.status_code in success_codes:
                 # TODO : article path will at some point be available in the respose
                 article_path = session.get_value(self.get_workflowId(), 'article_path')
                 self.set_monitor_property(self.settings, article_id, 'path', article_path, 'text')
@@ -103,21 +106,38 @@ class activity_PostEIF(activity.activity):
                     out_queue.write(m)
                 else:
                     self.set_monitor_property(self.settings, article_id, 'publication_status', 'ready', "text")
-            else:
+
+                self.emit_monitor_event(self.settings, article_id, version, run, "Post EIF", "end",
+                                        "Finished submitting EIF for article  " + article_id +
+                                        " status was " + str(r.status_code))
+
+                self.emit_monitor_event(self.settings, article_id, version, run, "Post EIF", "start",
+                                        "Finish submission of article " + article_id +
+                                        " for version " + str(version) + " run " + str(run) + " the response status ")
+                return True
+
+            elif r.status_code in retry_codes:
                 self.emit_monitor_event(self.settings, article_id, version, run, "Post EIF", "error",
                                         "Website ingest returned an error code: " + str(r.status_code))
-                return False
-            self.emit_monitor_event(self.settings, article_id, version, run, "Post EIF", "end",
-                                    "Finished submitting EIF for article  " + article_id +
-                                    " status was " + str(r.status_code))
 
-            self.emit_monitor_event(self.settings, article_id, version, run, "Post EIF", "start",
-                                    "Finish submission of article " + article_id +
-                                    " for version " + str(version) + " run " + str(run) + " the response status ")
+                self.emit_monitor_event(self.settings, article_id, version, run, "Post EIF", "error",
+                                                        "Bot is retrying a post EIF to Drupal")
+                return False # passing a false to the bot ensures that this activity falls through to the bot retry rules
+
+            elif r.status_code in error_codes:
+                self.emit_monitor_event(self.settings, article_id, version, run, "Post EIF", "error",
+                                        "Website ingest returned an error code: " + str(r.status_code) + " and is halting POST EIF, please manually resupply")
+                # raise an error to the dashboard
+                return True
+
+            else:
+                self.emit_monitor_event(self.settings, article_id, version, run, "Post EIF", "error",
+                                        "Website ingest returned an unexpected error code: " + str(r.status_code) + " and is halting POST EIF, please manually resupply")
+                return True
 
         except Exception as e:
             self.logger.exception("Exception when submitting article EIF")
             self.emit_monitor_event(self.settings, article_id, version, run, "Post EIF", "error",
-                                    "Error submitting EIF For article" + article_id + " message:" + str(e.message))
-            return False
+                                    "Error submitting EIF For article" + article_id + " message:" + str(e.message) + "please manyally resupply")
+            return True  # on capturing a general error do not retry posting the EIF.
         return True
